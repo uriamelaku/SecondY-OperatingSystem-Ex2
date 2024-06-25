@@ -7,78 +7,72 @@
 
 using namespace std;
 
-int main(int argc, char *args[]) {
+int main(int argc, char *argv[]) {
     // Check for valid command line arguments
     // (the number of arguments is not equal to 3 or the second argument is not "-e").
-    if (argc != 3 || strcmp(args[1], "-e") != 0) {
-        cout << "Usage: " << args[0] << " -e \"<program> <arguments>\"" << endl;
+    if (argc != 3 || strcmp(argv[1], "-e") != 0) {
+        cout << "Usage: " << argv[0] << " -e \"<program> <arguments>\"" << endl;
         return 1;
     }
     // check if the third argument is not in the correct format "<program> <arguments>"
-    if (strchr(args[2], ' ') == NULL) {
+    if (strchr(argv[2], ' ') == NULL) {
         cout << "Invalid format for program name and arguments." << endl;
         return 1;
     }
 
     // Splitting the second argument into program name and arguments
-    char program_name[100]; // Assuming max size of program name is 100
+    char temp[100]; // Assuming max size of program name is 100
     char program_arguments[100]; // Assuming max size of arguments is 100
 
+    
+
     // Copy the program name and arguments
-    strcpy(program_name, strtok(args[2], " "));
+    cout << "argv[2]: " << argv[2] << endl;
+    strcpy(temp, strtok(argv[2], " "));
     strcpy(program_arguments, strtok(NULL, ""));
+ 
+    char program_name[100] = "./";
+    strcat(program_name,temp);
+
 
     //Creates an array of pointers containing program name, program arguments, and a null terminator.
     char *program_args[] = {program_name, program_arguments, NULL};
 
     // Print the parsed program name and arguments
     cout << "Program to execute: " << program_name << endl;
-    cout << "Arguments: ";
-    if (program_arguments != NULL) {
-        cout << program_arguments;
-    } 
-    else {
-        cout << "None";
-    }
-    cout << endl;
+    cout << "Arguments: " << program_arguments << endl;
 
     // Fork a new process
     pid_t process_id = fork();
 
-    if (process_id < 0) {
+    if (process_id < 0) 
+    {
         
         // Fork failed
         perror("fork failed");
         return 1;
 
-    } 
-    else if (process_id == 0) {
+    }
 
+    if (process_id == 0) 
+    {
         // Child process
-        cout << "Child process executing \"" << program_name << "\" with arguments: \"" << (program_arguments ? program_arguments : "") << "\"" << endl;
+        cout << "Child process.." << endl;
         
         //Replaces the current process image with a new one, executing the given program with specified arguments.
-        execvp(program_name, program_args); 
+        execvp(program_name, program_args);
 
         // If execvp returns, there was an error
         perror("execvp");
         return 1;
    
     } 
-    else {
-
+    else 
+    {
         // Parent process
-        cout << "Parent process (PID: " << getpid() << ") waiting for child process (PID: " << process_id << ") to finish..." << endl;
-       
-        int status;
-        waitpid(process_id, &status, 0); // Wait for child process to finish
-       
-        if (WIFEXITED(status)) {
-            cout << "Child process completed with exit status: " << WEXITSTATUS(status) << endl;
-        } 
-        else {
-            cout << "Child process did not exit normally." << endl;
-        }
+        cout << "Parent process.." << endl;
+
+        wait(NULL); // Wait for child process to finish
     }
 
     return 0;

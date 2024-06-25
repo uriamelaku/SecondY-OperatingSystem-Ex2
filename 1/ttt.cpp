@@ -53,7 +53,7 @@ bool isComputerTurnValid(const vector<char>& board, const string& strategy, int 
 
 // Function to check if the player's move is valid
 bool isPlayerTurnValid(const vector<char>& board, int index) {
-    if (index < 1 || index > 9) {
+    if (index !=1 && index != 2 && index !=3 && index !=4 && index !=5 && index !=6 && index !=7 && index !=8 && index !=9) {
         cout << "Invalid input: Index out of range" << endl;
         return false;
     }
@@ -126,12 +126,24 @@ int main(int argc, char* argv[]) {
             cout << "Computer move: " << strategy[computerIndex] << endl;
         } 
         else { // Player's turn
-            cout << "Enter your move (1-9): ";
+            cout << "Enter your mov (1-9): ";
             int index;
-            cin >> index;
+            string temp;
+            cin >> temp;
+            if(temp < "1" || temp > "9") {
+                cout << "Invalid input" << endl;
+                continue;
+            }
+            index = stoi(temp);
+            
             while (!isPlayerTurnValid(board, index)) {
                 cout << "Enter your move (1-9): ";
-                cin >> index;
+                cin >> temp;
+                if(temp < "1" || temp > "9") {
+                    cout << "Invalid input" << endl;
+                    continue;
+                }
+                index = stoi(temp);
             }
             // Fill the board with O at the index
             board[index - 1] = currentPlayer;

@@ -4,229 +4,351 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <cstdlib>
 #include <cstring>
-#include <vector>
-#include <string>
-#include <netdb.h>
-#include <errno.h>
+#include <sys/wait.h>
 
 using namespace std;
 
-// Function to start a TCP server and listen for input
-int startTcpServer(int port) {
-    int server_fd, new_socket;
+int createServerSocket(int port) {
+    int server_fd;
     struct sockaddr_in address;
     int opt = 1;
     int addrlen = sizeof(address);
-
-    cout << "Creating socket..." << endl;
+    
+    // Creating socket file descriptor
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
         perror("socket failed");
         exit(EXIT_FAILURE);
     }
-
-    cout << "Setting socket options..." << endl;
+    
+    // Forcefully attaching socket to the port
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
         perror("setsockopt");
         exit(EXIT_FAILURE);
     }
+    
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(port);
-
-    //cout << "Binding socket to port " << port << "..." << endl;
+    
+    // Forcefully attaching socket to the port
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
         perror("bind failed");
         exit(EXIT_FAILURE);
     }
-    //cout << "Listening on port " << port << "..." << endl;
+    
     if (listen(server_fd, 3) < 0) {
         perror("listen");
         exit(EXIT_FAILURE);
     }
-    cout << "Waiting for connection..." << endl;
-    if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
-        perror("accept");
-        exit(EXIT_FAILURE);
-    }
-    cout << "Connection accepted." << endl;
-    return new_socket;
+    
+    return server_fd;
 }
 
-// Function to start a TCP client and connect for output
-int startTcpClient(const string& host, int port) {
-    struct sockaddr_in serv_addr;
-    int sock = 0;
-    struct hostent *he;
-
-    //cout << "Creating socket..." << endl;
-    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        perror("Socket creation error");
+void handleClientInput(int client_fd, char *program_args[], const char *program_name) {
+    int pipefd[2];
+    if (pipe(pipefd) == -1) {
+        perror("pipe");
         exit(EXIT_FAILURE);
     }
 
-    //cout << "Resolving hostname " << host << "..." << endl;
-    if ((he = gethostbyname(host.c_str())) == NULL) {
-        herror("gethostbyname");
-        exit(EXIT_FAILURE);
-    }
-
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(port);
-    serv_addr.sin_addr = *((struct in_addr *)he->h_addr);
-
-    cout << "Connecting to " << host << " on port " << port << "..." << endl;
-    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        perror("Connection failed");
-        exit(EXIT_FAILURE);
-    }
-    cout << "Connected to " << host << " on port " << port << "." << endl;
-    return sock;
-}
-
-// Function to execute the command
-void executeCommand(const string& command, int input_fd, int output_fd) {
-    int pipeIn[2];
-    int pipeOut[2];
-    pid_t pid;
-
-    cout << "Creating pipes..." << endl;
-    if (pipe(pipeIn) == -1) {
-        perror("pipeIn");
-        exit(EXIT_FAILURE);
-    }
-    if (pipe(pipeOut) == -1) {
-        perror("pipeOut");
-        exit(EXIT_FAILURE);
-    }
-
-    //cout << "Forking process..." << endl;
-    pid = fork();
+    pid_t pid = fork();
     if (pid == -1) {
         perror("fork");
         exit(EXIT_FAILURE);
     }
 
     if (pid == 0) { // Child process
-        //cout << "In child process. Redirecting stdin and stdout..." << endl;
-        close(pipeIn[1]); // Close write end of pipeIn
-        close(pipeOut[0]); // Close read end of pipeOut
+        close(pipefd[1]); // Close the write end of the pipe in the child
 
-        dup2(pipeIn[0], STDIN_FILENO); // Redirect stdin to pipeIn read end
-        dup2(pipeOut[1], STDOUT_FILENO); // Redirect stdout to pipeOut write end
+        // Redirect stdin of the child process to the read end of the pipe
+        dup2(pipefd[0], STDIN_FILENO);
+        close(pipefd[0]);
 
-        close(pipeIn[0]);
-        close(pipeOut[1]);
+        // Replaces the current process image with a new one, executing the given program with specified arguments.
+        execvp(program_name, program_args);
 
-        cout << "Executing command: " << command << endl;
-        execl("/bin/sh", "sh", "-c", command.c_str(), nullptr);
-        perror("execl");
+        // If execvp returns, there was an error
+        perror("execvp");
         exit(EXIT_FAILURE);
-    } 
-    else { // Parent process
-        close(pipeIn[0]); // Close read end of pipeIn
-        close(pipeOut[1]); // Close write end of pipeOut
+    } else { // Parent process
+        close(pipefd[0]); // Close the read end of the pipe in the parent
 
-        fd_set readfds;
         char buffer[1024];
+        int bytes_read;
 
-        cout << "In parent process. Entering select loop..." << endl;
         while (true) {
-            FD_ZERO(&readfds);
-            FD_SET(input_fd, &readfds);
-            FD_SET(pipeOut[0], &readfds);
-            int max_fd = max(input_fd, pipeOut[0]) + 1;
-
-            int activity = select(max_fd, &readfds, NULL, NULL, NULL);
-            if ((activity < 0) && (errno != EINTR)) {
-                perror("select error");
+            // Reading data from the client
+            bytes_read = read(client_fd, buffer, sizeof(buffer));
+            if (bytes_read <= 0) {
+                if (bytes_read < 0) {
+                    perror("read");
+                }
+                cout << "Client disconnected" << endl;
                 break;
             }
 
-            if (FD_ISSET(input_fd, &readfds)) {
-                int valread = read(input_fd, buffer, sizeof(buffer));
-                if (valread == 0) {
-                    break; // EOF
-                }
-                //cout << "Read " << valread << " bytes from input_fd. Writing to pipeIn..." << endl;
-                write(pipeIn[1], buffer, valread);
-            }
-
-            if (FD_ISSET(pipeOut[0], &readfds)) {
-                int valread = read(pipeOut[0], buffer, sizeof(buffer));
-                if (valread == 0) {
-                    break; // EOF
-                }
-                //cout << "Read " << valread << " bytes from pipeOut. Writing to output_fd..." << endl;
-                write(output_fd, buffer, valread);
+            // Writing the received data to the pipe (which is the stdin of the child process)
+            if (write(pipefd[1], buffer, bytes_read) < 0) {
+                perror("write to pipe");
+                break;
             }
         }
 
-        close(pipeIn[1]);
-        close(pipeOut[0]);
+        close(pipefd[1]); // Close the write end of the pipe
+        wait(NULL); // Wait for child process to finish
     }
 }
 
-// Main function
-int main(int argc, char* argv[]) {
-    if (argc < 3 || string(argv[1]) != "-e") {
-        cerr << "Usage: mync -e <command> [options]\n";
-        return 1;
+void handleClientInputOutput(int client_fd, char *program_args[], const char *program_name) {
+    int pipefd_in[2];
+    int pipefd_out[2];
+    if (pipe(pipefd_in) == -1 || pipe(pipefd_out) == -1) {
+        perror("pipe");
+        exit(EXIT_FAILURE);
     }
 
-    string command = argv[2];
-    string programName, strategy, inputMethod, outputMethod;
+    pid_t pid = fork();
+    if (pid == -1) {
+        perror("fork");
+        exit(EXIT_FAILURE);
+    }
 
-    cout << "Parsing arguments..." << endl;
-    for (int i = 3; i < argc; ++i) {
-        string arg = argv[i];
-        if (arg == "-i" && i + 1 < argc) {
-            inputMethod = argv[++i];   // inputMethod  = TCPS4050
-            cout << "Input method: " << inputMethod << endl;
-        } 
-        else if (arg == "-o" && i + 1 < argc) {
-            outputMethod = argv[++i];
-            cout << "Output method: " << outputMethod << endl;
-        } 
-        else if (arg == "-b" && i + 1 < argc) { 
-            inputMethod = outputMethod = argv[++i]; // inputMethod = outputMethod = TCPS4050
-            cout << "Both input and output in the client: " << inputMethod << endl;
+    if (pid == 0) { // Child process
+        close(pipefd_in[1]);  // Close the write end of the input pipe
+        close(pipefd_out[0]); // Close the read end of the output pipe
+
+        // Redirect stdin and stdout
+        dup2(pipefd_in[0], STDIN_FILENO);
+        dup2(pipefd_out[1], STDOUT_FILENO);
+
+        // Close the original pipe file descriptors
+        close(pipefd_in[0]);
+        close(pipefd_out[1]);
+
+        // Execute the command
+        execvp(program_name, program_args);
+        perror("execvp");
+        exit(EXIT_FAILURE);
+    } else { // Parent process
+        close(pipefd_in[0]);  // Close the read end of the input pipe
+        close(pipefd_out[1]); // Close the write end of the output pipe
+
+        char buffer[1024];
+        int bytes_read;
+
+        fd_set read_fds;
+        int max_fd = max(client_fd, pipefd_out[0]) + 1;
+
+        while (true) {
+            FD_ZERO(&read_fds);
+            FD_SET(client_fd, &read_fds);
+            FD_SET(pipefd_out[0], &read_fds);
+
+            int activity = select(max_fd, &read_fds, NULL, NULL, NULL);
+            if (activity < 0 && errno != EINTR) {
+                perror("select");
+                break;
+            }
+
+            if (FD_ISSET(client_fd, &read_fds)) {
+                bytes_read = read(client_fd, buffer, sizeof(buffer));
+                if (bytes_read <= 0) {
+                    if (bytes_read < 0) {
+                        perror("read");
+                    }
+                    cout << "Client disconnected" << endl;
+                    break;
+                }
+                write(pipefd_in[1], buffer, bytes_read);
+            }
+
+            if (FD_ISSET(pipefd_out[0], &read_fds)) {
+                bytes_read = read(pipefd_out[0], buffer, sizeof(buffer));
+                if (bytes_read <= 0) {
+                    if (bytes_read < 0) {
+                        perror("read");
+                    }
+                    break;
+                }
+                write(client_fd, buffer, bytes_read);
+            }
         }
+
+        close(pipefd_in[1]);  // Close the write end of the input pipe
+        close(pipefd_out[0]); // Close the read end of the output pipe
+
+        // Wait for child process to finish
+        wait(NULL);
+    }
+}
+
+void handleClientInputOutputSeparate(int client_fd_in, int client_fd_out, char *program_args[], const char *program_name) {
+    int pipefd_in[2];
+    int pipefd_out[2];
+    if (pipe(pipefd_in) == -1 || pipe(pipefd_out) == -1) {
+        perror("pipe");
+        exit(EXIT_FAILURE);
     }
 
-    int input_fd = STDIN_FILENO;
-    int output_fd = STDOUT_FILENO;
+    pid_t pid = fork();
+    if (pid == -1) {
+        perror("fork");
+        exit(EXIT_FAILURE);
+    }
 
-    if (!inputMethod.empty() && inputMethod.rfind("TCPS", 0) == 0) {
-        int port = stoi(inputMethod.substr(4));
-        cout << "Starting TCP server on port " << port << endl;
-        input_fd = startTcpServer(port);
-        cout << "TCP server started and client connected." << endl;
+    if (pid == 0) { // Child process
+        close(pipefd_in[1]);  // Close the write end of the input pipe
+        close(pipefd_out[0]); // Close the read end of the output pipe
+
+        // Redirect stdin and stdout
+        dup2(pipefd_in[0], STDIN_FILENO);
+        dup2(pipefd_out[1], STDOUT_FILENO);
+
+        // Close the original pipe file descriptors
+        close(pipefd_in[0]);
+        close(pipefd_out[1]);
+
+        // Execute the command
+        execvp(program_name, program_args);
+        perror("execvp");
+        exit(EXIT_FAILURE);
+    } else { // Parent process
+        close(pipefd_in[0]);  // Close the read end of the input pipe
+        close(pipefd_out[1]); // Close the write end of the output pipe
+
+        char buffer[1024];
+        int bytes_read;
+
+        fd_set read_fds;
+        int max_fd = max(client_fd_in, pipefd_out[0]) + 1;
+
+        while (true) {
+            FD_ZERO(&read_fds);
+            FD_SET(client_fd_in, &read_fds);
+            FD_SET(pipefd_out[0], &read_fds);
+
+            int activity = select(max_fd, &read_fds, NULL, NULL, NULL);
+            if (activity < 0 && errno != EINTR) {
+                perror("select");
+                break;
+            }
+
+            if (FD_ISSET(client_fd_in, &read_fds)) {
+                bytes_read = read(client_fd_in, buffer, sizeof(buffer));
+                if (bytes_read <= 0) {
+                    if (bytes_read < 0) {
+                        perror("read");
+                    }
+                    cout << "Client (input) disconnected" << endl;
+                    break;
+                }
+                write(pipefd_in[1], buffer, bytes_read);
+            }
+
+            if (FD_ISSET(pipefd_out[0], &read_fds)) {
+                bytes_read = read(pipefd_out[0], buffer, sizeof(buffer));
+                if (bytes_read <= 0) {
+                    if (bytes_read < 0) {
+                        perror("read");
+                    }
+                    break;
+                }
+                write(client_fd_out, buffer, bytes_read);
+            }
+        }
+
+        close(pipefd_in[1]);  // Close the write end of the input pipe
+        close(pipefd_out[0]); // Close the read end of the output pipe
+
+        // Wait for child process to finish
+        wait(NULL);
+    }
+}
+
+
+
+int main(int argc, char* argv[]) {
+    // Check for valid command line arguments
+    // if (argc != 5 || strcmp(argv[1], "-e") != 0 || (strcmp(argv[3], "-i") != 0 && strcmp(argv[3], "-b") != 0)) {
+    //     cout << "Usage: " << argv[0] << " -e \"<program> <arguments>\" -i/-b <port>" << endl;
+    //     return 1;
+    // }
+
+    
+    int port = stoi(string(argv[4]).substr(4));  // Extract port number
+    int server_fd = createServerSocket(port);
+
+    struct sockaddr_in client_address;
+    socklen_t client_addrlen = sizeof(client_address);
+    int client_fd;
+    cout << "Waiting for connection..." << endl;
+
+    // Splitting the second argument into program name and arguments
+    char temp[100]; // Assuming max size of program name is 100
+    char program_arguments[100]; // Assuming max size of arguments is 100
+
+    // Copy the program name and arguments
+    strcpy(temp, strtok(argv[2], " "));
+    strcpy(program_arguments, strtok(NULL, ""));
+
+    char program_name[100] = "./";
+    strcat(program_name, temp);
+
+    //Creates an array of pointers containing program name, program arguments, and a null terminator.
+    char *program_args[] = {program_name, program_arguments, NULL};
+
+    // Accepting a new connection
+    if ((client_fd = accept(server_fd, (struct sockaddr *)&client_address, &client_addrlen)) < 0) {
+        perror("accept");
+        exit(EXIT_FAILURE);
+    }
+
+    cout << "New connection accepted" << endl;
+
+    // these three if for the flags - -i, -b or -o
+    if (strcmp(argv[3], "-i") == 0 && argc == 5) {
+
+        // the function that handles only input
+        handleClientInput(client_fd, program_args, program_name);
     } 
-    else if (!inputMethod.empty() && inputMethod.rfind("TCPC", 0) == 0) {
-        string host = inputMethod.substr(4, inputMethod.find(',') - 4);
-        int port = stoi(inputMethod.substr(inputMethod.find(',') + 1));
-        cout << "Connecting to TCP server at " << host << " on port " << port << endl;
-        input_fd = startTcpClient(host, port);
-        cout << "Connected to TCP server." << endl;
+    if (strcmp(argv[3], "-b") == 0) {
+
+        // the function that handles both input and output
+        handleClientInputOutput(client_fd, program_args, program_name);
+    }
+    else if (strcmp(argv[5], "-o") == 0) {
+
+        // Create a new connection to the output server. only for -o flag
+        int client_fd_out = -1;
+        struct sockaddr_in serv_addr;
+        if ((client_fd_out = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+            perror("Socket creation error");
+            return 1;
+        }
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_port = htons(4455);
+        string outputHost = "127.0.0.1";
+        if (inet_pton(AF_INET, outputHost.c_str(), &serv_addr.sin_addr) <= 0) {
+            perror("Invalid address/ Address not supported");
+            return 1;
+        }
+        if (connect(client_fd_out, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+            perror("Connection Failed");
+            return 1;
+        }
+        cout << "Output connection established" << endl;
+
+        // the function that handles both input and output separately
+        handleClientInputOutputSeparate(client_fd, client_fd_out, program_args, program_name);
+    
+    
     }
 
-    if (!outputMethod.empty() && outputMethod.rfind("TCPC", 0) == 0) {
-        string host = outputMethod.substr(4, outputMethod.find(',') - 4);
-        int port = stoi(outputMethod.substr(outputMethod.find(',') + 1));
-        cout << "Connecting to TCP server at " << host << " on port " << port << endl;
-        output_fd = startTcpClient(host, port);
-        cout << "Connected to TCP server." << endl;
-    }
-
-    char *temp = strdup(command.c_str());
-    programName = strtok(temp, " ");
-    strategy = strtok(NULL, " ");
-    free(temp);
-
-    cout << "Program: " << programName << ", Strategy: " << strategy << endl;
-
-    executeCommand(command, input_fd, output_fd);
+    // Closing the connection with the client and the server
+    close(client_fd);
+    close(server_fd);
 
     return 0;
 }
